@@ -20,10 +20,6 @@ const PAYLOADS = [
     code: `<b onmouseover="alert('XSS по наведению мыши')">НАВЕДИ МЫШЬ СЮДА</b>`,
     note: 'Срабатывание по действию пользователя (обработчик события).',
   },
-  {
-    code: `<script>alert('я не сработаю')</script>`,
-    note: 'Через innerHTML тег <script> НЕ исполняется — поэтому атакующие берут onerror/onload.',
-  },
 ]
 
 export default function StoredXSS() {
