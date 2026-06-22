@@ -24,6 +24,7 @@ XSS-песочница — бэкенд (Flask + SQLite).
 
 import html
 import os
+import re
 import sqlite3
 from datetime import datetime
 
@@ -69,6 +70,10 @@ SEED_PRODUCTS = [
     ("Мышь беспроводная",        "Эргономичная мышь для долгой работы."),
 ]
 
+SEED_LAB = [
+    ("Преподаватель", "Эта доска «защищена» фильтром. Сумеете его обойти?"),
+]
+
 
 def init_db():
     """Создаёт таблицы и наполняет их тренировочными данными при первом запуске."""
@@ -86,6 +91,12 @@ def init_db():
             name        TEXT NOT NULL,
             description TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS lab_messages (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            author     TEXT NOT NULL,
+            text       TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
         """
     )
     # Наполняем, только если таблицы пустые.
@@ -99,6 +110,12 @@ def init_db():
         db.executemany(
             "INSERT INTO products (name, description) VALUES (?, ?)",
             SEED_PRODUCTS,
+        )
+    if db.execute("SELECT COUNT(*) FROM lab_messages").fetchone()[0] == 0:
+        now = datetime.now().isoformat(timespec="seconds")
+        db.executemany(
+            "INSERT INTO lab_messages (author, text, created_at) VALUES (?, ?, ?)",
+            [(a, t, now) for a, t in SEED_LAB],
         )
     db.commit()
     db.close()
@@ -204,6 +221,98 @@ def reflected_search():
     return jsonify({"echo": echo, "query": query, "mode": mode, "results": results})
 
 
+# ==========================================================================
+#  ЛАБОРАТОРНЫЙ ПОЛИГОН — обход наивных фильтров и корректная защита
+# --------------------------------------------------------------------------
+#  Доска сообщений, «защищённая» ЧЁРНЫМ СПИСКОМ. Это типичная ошибка: вместо
+#  кодирования вывода разработчик пытается «вырезать опасное». Все фильтры
+#  v1–v3 обходятся; корректный режим safe (экранирование) — нет. Задача
+#  студента — обойти наивные фильтры, а затем включить правильную защиту.
+#
+#  ВНИМАНИЕ (анти-пример!): фильтры намеренно дырявые, НЕ используйте их как
+#  образец. Фильтр применяется к ВЫВОДУ, а фронтенд вставляет результат как
+#  HTML, поэтому всё, что прошло фильтр, исполнится в браузере.
+# ==========================================================================
+def filter_v1(text):
+    # >>> УЯЗВИМО (v1): вырезаем только литерал "<script>"/"</script>".
+    # ОБХОД: теги с обработчиками событий, например <img src=x onerror=...>,
+    # ведь тега <script> в них нет вовсе.
+    return text.replace("<script>", "").replace("</script>", "")
+
+
+def filter_v2(text):
+    # >>> УЯЗВИМО (v2): режем <script>...</script> (любой регистр) и слова
+    # onerror/onload. ОБХОД: любой другой обработчик события (onmouseover,
+    # ontoggle, onbegin у <svg><animate> и т.п.) — чёрный список неполон.
+    text = re.sub(r"(?is)<\s*script.*?>.*?<\s*/\s*script\s*>", "", text)
+    text = re.sub(r"(?i)onerror", "", text)
+    text = re.sub(r"(?i)onload", "", text)
+    return text
+
+
+def filter_v3(text):
+    # >>> УЯЗВИМО (v3): режем <script> и атрибуты вида " on...=" (через пробел).
+    # ОБХОД: в качестве разделителя использовать не пробел, а "/" —
+    # <img src=x/onerror=alert(1)>: перед on... стоит "/", и регэксп не сработает.
+    text = re.sub(r"(?is)<\s*script.*?>.*?<\s*/\s*script\s*>", "", text)
+    text = re.sub(r"(?i)\son\w+\s*=", " ", text)
+    return text
+
+
+def filter_safe(text):
+    # === КОРРЕКТНО: кодируем вывод. Любая разметка превращается в текст
+    # и не исполняется — обойти такой подход нельзя.
+    return html.escape(text)
+
+
+LAB_FILTERS = {"v1": filter_v1, "v2": filter_v2, "v3": filter_v3, "safe": filter_safe}
+
+
+@app.get("/api/lab/messages")
+def lab_get():
+    fname = request.args.get("filter", "v1")
+    flt = LAB_FILTERS.get(fname, filter_v1)
+    db = get_db()
+    rows = db.execute(
+        "SELECT id, author, text, created_at FROM lab_messages ORDER BY id DESC"
+    ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["filtered"] = flt(d["text"])  # к выводу применяется выбранный фильтр
+        out.append(d)
+    return jsonify({"filter": fname, "messages": out})
+
+
+@app.post("/api/lab/messages")
+def lab_add():
+    data = request.get_json(force=True) or {}
+    author = (data.get("author") or "Гость").strip() or "Гость"
+    text = (data.get("text") or "").strip()
+    if not text:
+        return jsonify({"error": "Пустое сообщение"}), 400
+    db = get_db()
+    db.execute(
+        "INSERT INTO lab_messages (author, text, created_at) VALUES (?, ?, ?)",
+        (author, text, datetime.now().isoformat(timespec="seconds")),
+    )
+    db.commit()
+    return jsonify({"ok": True}), 201
+
+
+@app.delete("/api/lab/messages")
+def lab_reset():
+    db = get_db()
+    db.execute("DELETE FROM lab_messages")
+    now = datetime.now().isoformat(timespec="seconds")
+    db.executemany(
+        "INSERT INTO lab_messages (author, text, created_at) VALUES (?, ?, ?)",
+        [(a, t, now) for a, t in SEED_LAB],
+    )
+    db.commit()
+    return jsonify({"ok": True})
+
+
 @app.get("/")
 def index():
     return jsonify(
@@ -214,6 +323,9 @@ def index():
                 "POST   /api/stored/comments",
                 "DELETE /api/stored/comments  (сброс)",
                 "GET    /api/reflected/search?q=...&mode=vuln|safe",
+                "GET    /api/lab/messages?filter=v1|v2|v3|safe",
+                "POST   /api/lab/messages",
+                "DELETE /api/lab/messages  (сброс)",
             ],
         }
     )

@@ -3,6 +3,7 @@ import Home from './pages/Home.jsx'
 import StoredXSS from './pages/StoredXSS.jsx'
 import ReflectedXSS from './pages/ReflectedXSS.jsx'
 import DomXSS from './pages/DomXSS.jsx'
+import LabXSS from './pages/LabXSS.jsx'
 
 export default function App() {
   return (
@@ -17,6 +18,7 @@ export default function App() {
             <NavLink to="/stored">1. Хранимый</NavLink>
             <NavLink to="/reflected">2. Отражённый</NavLink>
             <NavLink to="/dom">3. DOM-модель</NavLink>
+            <NavLink to="/lab">Полигон</NavLink>
           </nav>
         </div>
       </header>
@@ -27,6 +29,7 @@ export default function App() {
           <Route path="/stored" element={<StoredXSS />} />
           <Route path="/reflected" element={<ReflectedXSS />} />
           <Route path="/dom" element={<DomXSS />} />
+          <Route path="/lab" element={<LabXSS />} />
         </Routes>
       </main>
     </>
